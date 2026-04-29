@@ -10,10 +10,15 @@ const server = http.createServer((req, res) => {
     return logisticController.confirmOrder(req, res);
   }
 
-  // 🌐 UI POC EVOLUÍDA
-  res.writeHead(200, { "Content-Type": "text/html" });
+  // 🌐 UI POC
+  res.writeHead(200, { "Content-Type": "text/html; charset=UTF-8" });
   res.end(`
     <html>
+      <head>
+        <meta charset="UTF-8">
+        <title>POC VA</title>
+      </head>
+
       <body style="font-family: Arial; padding: 20px">
 
         <h2>🚀 POC VA - Logística & Fallback Engine</h2>
@@ -88,7 +93,7 @@ const server = http.createServer((req, res) => {
 
         <br><br>
 
-        <button onclick="clearAll()">🧹 LIMPAR TUDO</button>
+        <button onclick="clearResponses()">🧹 LIMPAR RESPOSTAS</button>
 
         <script>
           function callApi1() {
@@ -101,6 +106,9 @@ const server = http.createServer((req, res) => {
             .then(d => {
               document.getElementById("res1").innerText =
                 JSON.stringify(d, null, 2);
+            })
+            .catch(err => {
+              document.getElementById("res1").innerText = err;
             });
           }
 
@@ -114,12 +122,13 @@ const server = http.createServer((req, res) => {
             .then(d => {
               document.getElementById("res2").innerText =
                 JSON.stringify(d, null, 2);
+            })
+            .catch(err => {
+              document.getElementById("res2").innerText = err;
             });
           }
 
-          function clearAll() {
-            document.getElementById("req1").value = "";
-            document.getElementById("req2").value = "";
+          function clearResponses() {
             document.getElementById("res1").innerText = "";
             document.getElementById("res2").innerText = "";
           }
