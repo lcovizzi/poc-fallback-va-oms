@@ -7,40 +7,96 @@ exports.getOptions = (data) => {
   const item = data.oms?.[0];
 
   if (!item) {
-    return { error: "OMS inválido" };
+    return {
+      explanation: "Erro: OMS inválido.",
+      data: { error: "OMS inválido" },
+    };
   }
 
-  // 🔥 pega todas as opções logísticas possíveis
+  const productId = item.productId;
+
+  // 🔥 LOG EXPLICATIVO
+  let explanationSteps = [];
+
+  explanationSteps.push(
+    `1. Buscando configurações logísticas para a loja ${salesOffice}.`
+  );
+
   const possibleLogistics = logistics.filter(
     (l) => l.salesOffice === salesOffice
   );
 
-  // 🔥 ESTOQUE BRUTO
-  const allStock = stock.filter((s) => s.productId === item.productId);
-
-  // 🔥 ESTOQUE ELEGÍVEL (MESMA REGRA DA API 2)
-  const eligibleStock = stockEligibility.getEligibleStock(
-    item.productId,
-    possibleLogistics
+  explanationSteps.push(
+    `2. Foram encontradas ${possibleLogistics.length} configurações logísticas.`
   );
 
-  // 🔥 fallback: local + externo continua existindo, mas agora filtrado
-  const localStock = eligibleStock.filter((s) => s.center === salesOffice);
+  const allStock = stock.filter((s) => s.productId === productId);
 
-  const externalStock = eligibleStock.filter((s) => s.center !== salesOffice);
+  if (allStock.length === 0) {
+    explanationSteps.push(
+      `3. Não existe estoque para o SKU ${productId}.`
+    );
 
-  const chosenStock = [...localStock, ...externalStock];
-
-  if (chosenStock.length === 0) {
     return {
-      error:
-        allStock.length > 0
-          ? "Estoque existente, porém não elegível para venda (restrição logística/plataforma)"
-          : "Produto sem estoque para venda",
+      explanation: explanationSteps.join("\n"),
+      data: { error: "Produto sem estoque para venda" },
     };
   }
 
+  explanationSteps.push(
+    `3. Estoque encontrado para o SKU ${productId}: ${allStock
+      .map((s) => `${s.center}/${s.deposit} (${s.qty})`)
+      .join(", ")}`
+  );
+
+  const eligibleStock = stockEligibility.getEligibleStock(
+    productId,
+    possibleLogistics
+  );
+
+  if (eligibleStock.length === 0) {
+    explanationSteps.push(
+      `4. Existe estoque, porém nenhum é elegível devido a restrições logísticas/plataforma.`
+    );
+
+    return {
+      explanation: explanationSteps.join("\n"),
+      data: {
+        error:
+          "Estoque existente, porém não elegível para venda (restrição logística/plataforma)",
+      },
+    };
+  }
+
+  explanationSteps.push(
+    `4. Estoques elegíveis: ${eligibleStock
+      .map((s) => `${s.center}/${s.deposit}`)
+      .join(", ")}`
+  );
+
+  const localStock = eligibleStock.filter((s) => s.center === salesOffice);
+  const externalStock = eligibleStock.filter((s) => s.center !== salesOffice);
+
+  explanationSteps.push(
+    `5. Separação: Local (${localStock.length}) | Externo (${externalStock.length})`
+  );
+
+  const chosenStock = [...localStock, ...externalStock];
+
   const flows = logisticUtils.getFlows(logistics, salesOffice, chosenStock);
 
-  return logisticUtils.buildResponse(item, chosenStock, flows);
+  explanationSteps.push(
+    `6. Fluxos disponíveis: ${flows.join(", ")}`
+  );
+
+  explanationSteps.push(
+    `✔️ Sucesso: Produto pode ser vendido pois há estoque elegível e configuração logística válida.`
+  );
+
+  const response = logisticUtils.buildResponse(item, chosenStock, flows);
+
+  return {
+    explanation: explanationSteps.join("\n"),
+    data: response,
+  };
 };

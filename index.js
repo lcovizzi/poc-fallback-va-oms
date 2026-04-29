@@ -105,7 +105,7 @@ const server = http.createServer((req, res) => {
             .then(r => r.json())
             .then(d => {
               document.getElementById("res1").innerText =
-                JSON.stringify(d, null, 2);
+              "EXPLICAÇÃO:\n" + d.explanation + "\n\nRESPONSE:\n" + JSON.stringify(d.data, null, 2);
             })
             .catch(err => {
               document.getElementById("res1").innerText = err;
@@ -121,7 +121,7 @@ const server = http.createServer((req, res) => {
             .then(r => r.json())
             .then(d => {
               document.getElementById("res2").innerText =
-                JSON.stringify(d, null, 2);
+              "EXPLICAÇÃO:\n" + d.explanation + "\n\nRESPONSE:\n" + JSON.stringify(d, null, 2);
             })
             .catch(err => {
               document.getElementById("res2").innerText = err;
