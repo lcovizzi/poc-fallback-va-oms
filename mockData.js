@@ -388,6 +388,28 @@ module.exports = {
       prepDays: 1,
       transfDays: 0,
     },
+    {
+      salesOffice: "0002",
+      stockCenter: "0002",
+      stockDeposit: "C010",
+      type: "LOJA",
+      outCenter: "0002",
+      outDeposit: "C010",
+      flow: "ED",
+      prepDays: 1,
+      transfDays: 0,
+    },
+    {
+      salesOffice: "0002",
+      stockCenter: "0002",
+      stockDeposit: "C050",
+      type: "LOJA",
+      outCenter: "0002",
+      outDeposit: "C010",
+      flow: "ED",
+      prepDays: 1,
+      transfDays: 0,
+    },
 
     // ===== LOJA 0038 =====
     {

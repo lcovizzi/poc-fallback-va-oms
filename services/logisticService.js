@@ -1,102 +1,84 @@
-const { stock, logistics } = require("../mockData");
-const stockEligibility = require("../services/stockEligibilityService");
+const dataStore = require("./dataStore");
+const stockEligibility = require("./stockEligibilityService");
 const logisticUtils = require("../utils/logisticUtils");
+
+function buildError(externalId, message, steps) {
+  return {
+    explanation: steps.join("\n"),
+    data: {
+      sourcingGroup: [{ blockId: "", delivery: [] }],
+      errorItems: [{ externalId }],
+      message: [{ externalId, message }],
+    },
+  };
+}
 
 exports.getOptions = (data) => {
   const salesOffice = data.salesOffice;
   const item = data.oms?.[0];
+  const externalId = "flow-001";
 
-  if (!item) {
-    return {
-      explanation: "Erro: OMS inválido.",
-      data: { error: "OMS inválido" },
-    };
-  }
+  let steps = [];
 
-  const productId = item.productId;
+  if (!item) return buildError(externalId, "OMS inválido", ["❌ OMS inválido"]);
 
-  // 🔥 LOG EXPLICATIVO
-  let explanationSteps = [];
+  const logistics = dataStore.getLogistics();
+  const stock = dataStore.getStock();
 
-  explanationSteps.push(
-    `1. Buscando configurações logísticas para a loja ${salesOffice}.`
-  );
+  steps.push(`1. Buscando configurações da loja ${salesOffice}`);
 
-  const possibleLogistics = logistics.filter(
-    (l) => l.salesOffice === salesOffice
-  );
+  const possible = logistics.filter((l) => l.salesOffice === salesOffice);
 
-  explanationSteps.push(
-    `2. Foram encontradas ${possibleLogistics.length} configurações logísticas.`
-  );
+  steps.push(`2. ${possible.length} configurações encontradas`);
 
-  const allStock = stock.filter((s) => s.productId === productId);
+  const allStock = stock.filter((s) => s.productId === item.productId);
 
-  if (allStock.length === 0) {
-    explanationSteps.push(
-      `3. Não existe estoque para o SKU ${productId}.`
+  if (!allStock.length)
+    return buildError(
+      externalId,
+      "Sem estoque",
+      ["❌ Produto sem estoque"]
     );
 
-    return {
-      explanation: explanationSteps.join("\n"),
-      data: { error: "Produto sem estoque para venda" },
-    };
-  }
-
-  explanationSteps.push(
-    `3. Estoque encontrado para o SKU ${productId}: ${allStock
+  steps.push(
+    `3. Estoque: ${allStock
       .map((s) => `${s.center}/${s.deposit} (${s.qty})`)
       .join(", ")}`
   );
 
-  const eligibleStock = stockEligibility.getEligibleStock(
-    productId,
-    possibleLogistics
+  const eligible = stockEligibility.getEligibleStock(
+    item.productId,
+    possible
   );
 
-  if (eligibleStock.length === 0) {
-    explanationSteps.push(
-      `4. Existe estoque, porém nenhum é elegível devido a restrições logísticas/plataforma.`
+  if (!eligible.length)
+    return buildError(
+      externalId,
+      "Não elegível",
+      ["❌ Estoque não elegível"]
     );
 
-    return {
-      explanation: explanationSteps.join("\n"),
-      data: {
-        error:
-          "Estoque existente, porém não elegível para venda (restrição logística/plataforma)",
-      },
-    };
-  }
-
-  explanationSteps.push(
-    `4. Estoques elegíveis: ${eligibleStock
+  steps.push(
+    `4. Elegíveis: ${eligible
       .map((s) => `${s.center}/${s.deposit}`)
       .join(", ")}`
   );
 
-  const localStock = eligibleStock.filter((s) => s.center === salesOffice);
-  const externalStock = eligibleStock.filter((s) => s.center !== salesOffice);
-
-  explanationSteps.push(
-    `5. Separação: Local (${localStock.length}) | Externo (${externalStock.length})`
+  const flows = logisticUtils.getFlows(
+    dataStore.getLogistics(),
+    salesOffice,
+    eligible
   );
 
-  const chosenStock = [...localStock, ...externalStock];
+  if (!flows.length)
+    return buildError(externalId, "Sem fluxo", ["❌ Sem fluxo"]);
 
-  const flows = logisticUtils.getFlows(logistics, salesOffice, chosenStock);
+  steps.push(`5. Fluxos: ${flows.join(", ")}`);
 
-  explanationSteps.push(
-    `6. Fluxos disponíveis: ${flows.join(", ")}`
-  );
-
-  explanationSteps.push(
-    `✔️ Sucesso: Produto pode ser vendido pois há estoque elegível e configuração logística válida.`
-  );
-
-  const response = logisticUtils.buildResponse(item, chosenStock, flows);
+  const response = logisticUtils.buildResponse(item, eligible, flows);
 
   return {
-    explanation: explanationSteps.join("\n"),
+    explanation: steps.join("\n"),
     data: response,
   };
 };

@@ -1,19 +1,17 @@
-const { stock } = require("../mockData");
+const dataStore = require("./dataStore");
 
-/**
- * Verifica se o estoque é elegível para uma lista de regras logísticas
- */
 function getEligibleStock(productId, logistics) {
-  const productStock = stock.filter((s) => s.productId === productId);
+  const productStock = dataStore
+    .getStock()
+    .filter((s) => s.productId === productId && s.qty > 0);
 
-  const eligible = productStock.filter((s) => {
+  return productStock.filter((s) => {
     return logistics.some((l) => {
-      const matchCenter =
+      const match =
         l.stockCenter === s.center && l.stockDeposit === s.deposit;
 
-      if (!matchCenter) return false;
+      if (!match) return false;
 
-      // 🔥 REGRA PLATAFORMA
       if (s.isPlatform === "Y") {
         return l.type === "PLATAFORMA" || l.type === "CD/PLATAFORMA";
       }
@@ -21,15 +19,10 @@ function getEligibleStock(productId, logistics) {
       return true;
     });
   });
-
-  return eligible;
 }
 
-/**
- * Verifica estoque bruto (sem regras)
- */
 function getAllStock(productId) {
-  return stock.filter((s) => s.productId === productId);
+  return dataStore.getStock().filter((s) => s.productId === productId);
 }
 
 module.exports = {

@@ -1,7 +1,19 @@
 const http = require("http");
+const fs = require("fs");
+const path = require("path");
+
 const logisticController = require("./controllers/logisticController");
+const dataStore = require("./services/dataStore");
+
+const MIME_TYPES = {
+  ".html": "text/html",
+  ".js": "text/javascript",
+  ".css": "text/css",
+};
 
 const server = http.createServer((req, res) => {
+  // ================= API =================
+
   if (req.method === "POST" && req.url === "/logistic/options") {
     return logisticController.getOptions(req, res);
   }
@@ -10,135 +22,61 @@ const server = http.createServer((req, res) => {
     return logisticController.confirmOrder(req, res);
   }
 
-  // 🌐 UI POC
-  res.writeHead(200, { "Content-Type": "text/html; charset=UTF-8" });
-  res.end(`
-    <html>
-      <head>
-        <meta charset="UTF-8">
-        <title>POC VA</title>
-      </head>
+  if (req.method === "GET" && req.url === "/moc") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    return res.end(
+      JSON.stringify({
+        stock: dataStore.getStock(),
+        logistics: dataStore.getLogistics(),
+      })
+    );
+  }
 
-      <body style="font-family: Arial; padding: 20px">
+  if (req.method === "POST" && req.url === "/moc/stock") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      dataStore.addStock(JSON.parse(body));
+      res.end(JSON.stringify({ ok: true }));
+    });
+    return;
+  }
 
-        <h2>🚀 POC VA - Logística & Fallback Engine</h2>
+  if (req.method === "POST" && req.url === "/moc/logistic") {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      dataStore.addLogistic(JSON.parse(body));
+      res.end(JSON.stringify({ ok: true }));
+    });
+    return;
+  }
 
-        <div style="display: flex; gap: 30px; align-items: flex-start">
+  if (req.method === "POST" && req.url === "/moc/reset") {
+    dataStore.reset();
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
 
-          <!-- API 1 -->
-          <div style="width: 50%">
-            <h3>📦 API 1 - Consulta (OMS 0)</h3>
+  // ================= STATIC =================
 
-            <textarea id="req1" rows="12" style="width: 100%">
-{
-  "customerId": "4000075576",
-  "salesOffice": "0001",
-  "oms": [
-    {
-      "productId": "89100221",
-      "productUnitMeasure": "UN",
-      "productQuantity": 5
+  let filePath =
+    req.url === "/" ? "./public/index.html" : "./public" + req.url;
+
+  const ext = path.extname(filePath);
+  const contentType = MIME_TYPES[ext] || "text/plain";
+
+  fs.readFile(filePath, (err, content) => {
+    if (err) {
+      res.writeHead(404);
+      res.end("Not found");
+    } else {
+      res.writeHead(200, { "Content-Type": contentType });
+      res.end(content);
     }
-  ]
-}
-            </textarea>
-
-            <br><br>
-            <button onclick="callApi1()">Executar API 1</button>
-
-            <pre id="res1"></pre>
-
-            <h4>📘 Regra API 1</h4>
-            <p>
-              Retorna todos os estoques elegíveis + validação logística.<br>
-              Produto ainda não sofre split de remessa — apenas simulação de disponibilidade.
-            </p>
-          </div>
-
-          <!-- API 2 -->
-          <div style="width: 50%">
-            <h3>🧾 API 2 - Confirmação (OMS 1)</h3>
-
-            <textarea id="req2" rows="12" style="width: 100%">
-{
-  "customerId": "4000075576",
-  "salesOffice": "0001",
-  "items": [
-    {
-      "externalId": "flow-001",
-      "typeDelivery": "CR",
-      "deliveryMethod": "CX",
-      "storeId": "0001",
-      "productId": "89100221",
-      "productUnitMeasure": "UN",
-      "productUnitPrice": 143.51,
-      "productQuantity": 5
-    }
-  ]
-}
-            </textarea>
-
-            <br><br>
-            <button onclick="callApi2()">Executar API 2</button>
-
-            <pre id="res2"></pre>
-
-            <h4>📘 Regra API 2</h4>
-            <p>
-              Executa reserva real de estoque.<br>
-              Aplica regras de split, plataforma, logística e validação de remessa.
-            </p>
-          </div>
-        </div>
-
-        <br><br>
-
-        <button onclick="clearResponses()">🧹 LIMPAR RESPOSTAS</button>
-
-        <script>
-          function callApi1() {
-            fetch("/logistic/options", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: document.getElementById("req1").value
-            })
-            .then(r => r.json())
-            .then(d => {
-              document.getElementById("res1").innerText =
-              "EXPLICAÇÃO:\n" + d.explanation + "\n\nRESPONSE:\n" + JSON.stringify(d.data, null, 2);
-            })
-            .catch(err => {
-              document.getElementById("res1").innerText = err;
-            });
-          }
-
-          function callApi2() {
-            fetch("/logistic/confirm", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: document.getElementById("req2").value
-            })
-            .then(r => r.json())
-            .then(d => {
-              document.getElementById("res2").innerText =
-              "EXPLICAÇÃO:\n" + d.explanation + "\n\nRESPONSE:\n" + JSON.stringify(d, null, 2);
-            })
-            .catch(err => {
-              document.getElementById("res2").innerText = err;
-            });
-          }
-
-          function clearResponses() {
-            document.getElementById("res1").innerText = "";
-            document.getElementById("res2").innerText = "";
-          }
-        </script>
-
-      </body>
-    </html>
-  `);
+  });
 });
 
 server.listen(8080, () => {
-  console.log("🚀 Server rodando na porta 8080");
+  console.log("🚀 Server rodando em http://localhost:8080");
 });
