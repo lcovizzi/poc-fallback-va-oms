@@ -1,7 +1,6 @@
 const { logistics } = require("../mockData");
 const stockService = require("./stockEligibilityService");
 
-// 🔧 utils
 function generateId() {
   return Math.random().toString(36).substring(2, 12);
 }
@@ -35,7 +34,7 @@ function findLogistics(item, salesOffice) {
   );
 }
 
-// 🔥 SERVICE PRINCIPAL
+// 🔥 SERVICE
 exports.confirm = (data) => {
   const items = data.items || [];
   const salesOffice = data.salesOffice;
@@ -44,130 +43,113 @@ exports.confirm = (data) => {
   const messages = [];
   const deliveriesMap = {};
 
+  let explanation = [];
+
   for (const item of items) {
+    explanation.push(`\n📦 SKU ${item.productId}`);
+
     const possibleLogistics = findLogistics(item, salesOffice);
+
+    explanation.push(
+      `1. Configurações logísticas encontradas: ${possibleLogistics.length}`
+    );
 
     if (possibleLogistics.length === 0) {
       errorItems.push({ externalId: item.externalId });
 
+      explanation.push(`❌ Nenhuma configuração logística válida`);
+
       messages.push({
         externalId: item.externalId,
-        typeMsg: "E",
-        classeMsg: "ZMMM_OMS",
-        msgId: 164,
-        message: `Nenhuma configuração logística encontrada para o fluxo ${
-          item.deliveryMethod || item.typeDelivery
-        }.`,
-        systemLogic: "POC",
+        message: "Sem configuração logística",
       });
 
       continue;
     }
 
-    // 🔥 ESTOQUE BRUTO (antes de qualquer regra)
     const allStock = stockService.getAllStock(item.productId);
 
-    // ❌ 1. SEM ESTOQUE
     if (allStock.length === 0) {
+      explanation.push(`❌ Sem estoque`);
+
       errorItems.push({ externalId: item.externalId });
-
-      messages.push({
-        externalId: item.externalId,
-        typeMsg: "E",
-        classeMsg: "ZMMM_OMS",
-        msgId: 164,
-        message: `SKU ${item.productId}: sem estoque disponível no momento.`,
-        systemLogic: "POC",
-      });
-
       continue;
     }
 
-    // 🚫 2. ESTOQUE EXISTE MAS NÃO É ELEGÍVEL
+    explanation.push(
+      `2. Estoque total encontrado: ${allStock
+        .map((s) => `${s.center}/${s.deposit} (${s.qty})`)
+        .join(", ")}`
+    );
+
     const eligibleStock = stockService.getEligibleStock(
       item.productId,
       possibleLogistics
     );
 
     if (eligibleStock.length === 0) {
+      explanation.push(
+        `❌ Estoque existe mas não pode ser utilizado (plataforma/logística)`
+      );
+
       errorItems.push({ externalId: item.externalId });
-
-      messages.push({
-        externalId: item.externalId,
-        typeMsg: "E",
-        classeMsg: "ZMMM_OMS",
-        msgId: 164,
-        message: `SKU ${item.productId}: estoque disponível, porém não elegível por restrição logística/plataforma para loja ${salesOffice}.`,
-        systemLogic: "POC",
-      });
-
       continue;
     }
 
-    let availableStocks = eligibleStock;
+    explanation.push(
+      `3. Estoques elegíveis: ${eligibleStock
+        .map((s) => `${s.center}/${s.deposit}`)
+        .join(", ")}`
+    );
 
     let allocation = [];
 
-    // 🔥 SEM SPLIT
     if (isNoSplitFlow(item.deliveryMethod)) {
-      const valid = availableStocks.find((s) => s.qty >= item.productQuantity);
+      explanation.push(`4. Fluxo sem split (${item.deliveryMethod})`);
+
+      const valid = eligibleStock.find(
+        (s) => s.qty >= item.productQuantity
+      );
 
       if (!valid) {
+        explanation.push(`❌ Nenhum depósito atende sozinho`);
+
         errorItems.push({ externalId: item.externalId });
-
-        messages.push({
-          externalId: item.externalId,
-          typeMsg: "E",
-          classeMsg: "ZMMM_OMS",
-          msgId: 164,
-          message: `SKU ${item.productId}: saldo insuficiente para o fluxo ${item.deliveryMethod}. Solicitado ${item.productQuantity}.`,
-          systemLogic: "POC",
-        });
-
         continue;
       }
 
-      allocation.push({ ...valid, usedQty: item.productQuantity });
-    }
+      explanation.push(
+        `✔️ Atendido pelo depósito ${valid.center}/${valid.deposit}`
+      );
 
-    // 🔥 COM SPLIT
-    else {
+      allocation.push({ ...valid, usedQty: item.productQuantity });
+    } else {
+      explanation.push(`4. Fluxo com split permitido`);
+
       let remaining = item.productQuantity;
 
-      for (const s of availableStocks) {
+      for (const s of eligibleStock) {
         if (remaining <= 0) break;
 
         const used = Math.min(s.qty, remaining);
 
-        allocation.push({
-          ...s,
-          usedQty: used,
-        });
+        allocation.push({ ...s, usedQty: used });
+
+        explanation.push(
+          `Consumindo ${used} de ${s.center}/${s.deposit}`
+        );
 
         remaining -= used;
       }
 
       if (remaining > 0) {
+        explanation.push(`❌ Estoque insuficiente mesmo com split`);
+
         errorItems.push({ externalId: item.externalId });
-
-        messages.push({
-          externalId: item.externalId,
-          typeMsg: "E",
-          classeMsg: "ZMMM_OMS",
-          msgId: 164,
-          message: `SKU ${
-            item.productId
-          }: saldo insuficiente para atendimento. Solicitado ${
-            item.productQuantity
-          }, disponível ${item.productQuantity - remaining}.`,
-          systemLogic: "POC",
-        });
-
         continue;
       }
     }
 
-    // 🔥 AGRUPAMENTO DE ENTREGA
     const key = `${item.deliveryMethod || "ED"}_${allocation[0].center}`;
 
     if (!deliveriesMap[key]) {
@@ -187,7 +169,6 @@ exports.confirm = (data) => {
           modal: [
             {
               modalityQuote: item.deliveryMethod || "ED",
-              quotePrice: 0,
               deliverySchedule: [
                 {
                   expeditionPlant: allocation[0].center,
@@ -207,7 +188,6 @@ exports.confirm = (data) => {
       };
     }
 
-    // 🔥 ITENS
     allocation.forEach((a) => {
       deliveriesMap[key].items.push({
         externalId: item.externalId,
@@ -231,9 +211,9 @@ exports.confirm = (data) => {
     });
   }
 
-  // 🔥 FINALIZAÇÃO COM ERRO
   if (errorItems.length > 0) {
     return {
+      explanation: explanation.join("\n"),
       statusProcess: 500,
       sourcingGroup: [{ blockId: "", delivery: [] }],
       errorItems,
@@ -241,8 +221,8 @@ exports.confirm = (data) => {
     };
   }
 
-  // 🔥 SUCESSO
   return {
+    explanation: explanation.join("\n"),
     statusProcess: 200,
     sourcingGroup: [
       {
