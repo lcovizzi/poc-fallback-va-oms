@@ -18,6 +18,20 @@ function addDays(days) {
   return d;
 }
 
+function getSLA(log) {
+  return (log.prepDays || 0) + (log.transfDays || 0);
+}
+
+// ===============================
+// 🔥 NOVA REGRA
+// ===============================
+function canUseGlobalOutCenter(items) {
+  const flows = new Set(
+    items.map(i => i.deliveryMethod || "ED")
+  );
+  return flows.size === 1;
+}
+
 // ===============================
 // LOGÍSTICA
 // ===============================
@@ -39,37 +53,90 @@ function findLogistics(item, salesOffice) {
 }
 
 // ===============================
-// ESCOLHE CENTRO DO SKU
+// 🧠 ESCOLHE OUTCENTER GLOBAL
 // ===============================
-function chooseBestCenter(item, eligibleStock) {
-  const grouped = {};
+function chooseBestOutCenter(itemsAnalysis) {
+  const outMap = {};
 
-  // agrupa por centro
-  eligibleStock.forEach((s) => {
-    if (!grouped[s.center]) grouped[s.center] = [];
-    grouped[s.center].push(s);
+  itemsAnalysis.forEach(({ item, logistics, eligibleStock }) => {
+    logistics.forEach((log) => {
+      const stockList = eligibleStock.filter(
+        (s) => s.center === log.stockCenter
+      );
+
+      const total = stockList.reduce((sum, s) => sum + s.qty, 0);
+
+      if (total >= item.productQuantity) {
+        if (!outMap[log.outCenter]) {
+          outMap[log.outCenter] = {
+            count: 0,
+            logs: [],
+          };
+        }
+
+        outMap[log.outCenter].count++;
+        outMap[log.outCenter].logs.push(log);
+      }
+    });
   });
 
+  const totalItems = itemsAnalysis.length;
+
+  const valid = Object.entries(outMap)
+    .filter(([_, v]) => v.count === totalItems)
+    .map(([out, v]) => {
+      const maxSla = Math.max(...v.logs.map(getSLA));
+      return { out, sla: maxSla };
+    })
+    .sort((a, b) => a.sla - b.sla);
+
+  return valid.length ? valid[0].out : null;
+}
+
+// ===============================
+// 🧠 ESCOLHE MELHOR CENTRO POR SKU
+// ===============================
+function chooseBestCenterPerSKU(item, logs, eligibleStock) {
   const candidates = [];
 
-  for (const center in grouped) {
-    const total = grouped[center].reduce((sum, s) => sum + s.qty, 0);
+  logs.forEach((log) => {
+    const stockList = eligibleStock.filter(
+      (s) => s.center === log.stockCenter
+    );
+
+    const total = stockList.reduce((sum, s) => sum + s.qty, 0);
 
     if (total >= item.productQuantity) {
       candidates.push({
-        center,
-        stock: grouped[center],
-        total,
+        log,
+        stockList,
+        sla: getSLA(log),
       });
     }
-  }
+  });
 
   if (!candidates.length) return null;
 
-  // 🔥 regra: prioriza maior estoque (pode evoluir depois)
-  candidates.sort((a, b) => b.total - a.total);
+  candidates.sort((a, b) => a.sla - b.sla);
 
   return candidates[0];
+}
+
+// ===============================
+// 🔥 CONTROLE GLOBAL DE CONSUMO
+// ===============================
+const stockUsage = {};
+
+function getAvailableQty(sku, center, deposit, originalQty) {
+  const key = `${sku}_${center}_${deposit}`;
+  const used = stockUsage[key] || 0;
+  return originalQty - used;
+}
+
+function reserveStock(sku, center, deposit, qty) {
+  const key = `${sku}_${center}_${deposit}`;
+  if (!stockUsage[key]) stockUsage[key] = 0;
+  stockUsage[key] += qty;
 }
 
 // ===============================
@@ -85,103 +152,125 @@ exports.confirm = (data) => {
     const messages = [];
     const explanation = [];
 
-    for (const item of items) {
-      explanation.push(`\n📦 SKU ${item.productId}`);
+    // 🔥 reset controle por execução
+    Object.keys(stockUsage).forEach(k => delete stockUsage[k]);
 
+    // ===============================
+    // ANALISE INICIAL
+    // ===============================
+    const itemsAnalysis = items.map((item) => {
       const logistics = findLogistics(item, salesOffice);
+
+      const eligibleStock = stockService
+        .getEligibleStock(item.productId, logistics)
+        .filter((s) => s.qty > 0);
+
+      return { item, logistics, eligibleStock };
+    });
+
+    // ===============================
+    // GLOBAL
+    // ===============================
+    let bestOutCenter = null;
+
+    if (canUseGlobalOutCenter(items)) {
+      const candidate = chooseBestOutCenter(itemsAnalysis);
+
+      if (candidate) {
+        bestOutCenter = candidate;
+        explanation.push(`🧠 OutCenter global escolhido: ${bestOutCenter}`);
+      } else {
+        explanation.push("🧠 Nenhum centro único atende todos → fallback por SKU");
+      }
+    } else {
+      explanation.push("🧠 Múltiplos fluxos → sem outCenter global");
+    }
+
+    // ===============================
+    // PROCESSAMENTO
+    // ===============================
+    for (const analysis of itemsAnalysis) {
+      const { item, logistics, eligibleStock } = analysis;
+
+      explanation.push(`\n📦 SKU ${item.productId}`);
 
       if (!logistics.length) {
         pushError(item, "Sem logística");
         continue;
       }
 
-      const eligibleStock = stockService
-        .getEligibleStock(item.productId, logistics)
-        .filter((s) => s.qty > 0);
-
       if (!eligibleStock.length) {
         pushError(item, "Sem estoque");
         continue;
       }
 
-      // ===============================
-      // 🧠 ESCOLHE UM CENTRO
-      // ===============================
-      const chosen = chooseBestCenter(item, eligibleStock);
+      let validLogs = logistics;
+
+      if (bestOutCenter) {
+        validLogs = logistics.filter(
+          (l) => l.outCenter === bestOutCenter
+        );
+      }
+
+      let chosen = chooseBestCenterPerSKU(
+        item,
+        validLogs,
+        eligibleStock
+      );
+
+      if (!chosen && bestOutCenter) {
+        explanation.push("↩ fallback SKU → ignorando outCenter global");
+
+        chosen = chooseBestCenterPerSKU(
+          item,
+          logistics,
+          eligibleStock
+        );
+      }
 
       if (!chosen) {
-        pushError(item, "Nenhum centro atende");
-        continue;
-      }
-
-      explanation.push(`→ Centro escolhido: ${chosen.center}`);
-
-      let remaining = item.productQuantity;
-      const allocation = [];
-
-      // 🔀 split apenas dentro do MESMO CENTRO
-      const sorted = [...chosen.stock].sort((a, b) => a.qty - b.qty);
-
-      for (const s of sorted) {
-        if (remaining <= 0) break;
-
-        const used = Math.min(s.qty, remaining);
-
-        allocation.push({
-          ...s,
-          usedQty: used,
-        });
-
-        remaining -= used;
-      }
-
-      if (remaining > 0) {
         pushError(item, "Saldo insuficiente");
         continue;
       }
 
-      // ===============================
-      // 🚚 ENTREGA (usa logística)
-      // ===============================
-      const logisticRef = logistics.find(
-        (l) => l.stockCenter === chosen.center
-      );
+      // 🔥 NOVA VALIDAÇÃO GLOBAL DE ESTOQUE
+      const totalAvailable = chosen.stockList.reduce((sum, s) => {
+        return sum + getAvailableQty(item.productId, s.center, s.deposit, s.qty);
+      }, 0);
 
-      if (!logisticRef) {
-        pushError(item, "Logística não encontrada para centro");
+      if (totalAvailable < item.productQuantity) {
+        pushError(item, "Saldo insuficiente considerando outros itens");
         continue;
       }
 
-      const flow = item.deliveryMethod || "ED";
+      explanation.push(
+        `→ Centro: ${chosen.log.stockCenter} (SLA ${chosen.sla} dias)`
+      );
 
-      const key = `${flow}_${logisticRef.outCenter}`;
+      let remaining = item.productQuantity;
+      const allocation = [];
+
+      for (const s of chosen.stockList) {
+        if (remaining <= 0) break;
+
+        const available = getAvailableQty(item.productId, s.center, s.deposit, s.qty);
+
+        if (available <= 0) continue;
+
+        const used = Math.min(available, remaining);
+
+        reserveStock(item.productId, s.center, s.deposit, used);
+
+        allocation.push({ ...s, usedQty: used });
+        remaining -= used;
+      }
+
+      const flow = item.deliveryMethod || "ED";
+      const key = `${flow}_${chosen.log.outCenter}`;
 
       if (!deliveriesMap[key]) {
-        // 🔥 calcula SLA baseado em TODOS os centros usados
-const usedCenters = [
-  ...new Set(allocation.map((a) => a.center)),
-];
-
-let maxDays = 0;
-
-usedCenters.forEach((center) => {
-  const log = logistics.find((l) => l.stockCenter === center);
-
-  if (!log) return;
-
-  const total =
-    (log.prepDays || 0) +
-    (log.transfDays || 0);
-
-  if (total > maxDays) {
-    maxDays = total;
-  }
-});
-
-const baseDate = formatDate(addDays(maxDays));
-
         deliveriesMap[key] = {
-          dateAvailable: baseDate,
+          dateAvailable: null,
           deliveryId: generateId(),
           deliveryMethod: flow,
           freight: {
@@ -191,10 +280,10 @@ const baseDate = formatDate(addDays(maxDays));
                 modalityQuote: flow,
                 deliverySchedule: [
                   {
-                    expeditionPlant: logisticRef.outCenter,
+                    expeditionPlant: chosen.log.outCenter,
                     startHour: "08:00:00",
                     endHour: "18:00:00",
-                    baseDate,
+                    baseDate: null,
                     slotId: generateId(),
                     slotDesc: "Comercial",
                     slotApplicationId: "COMERCIAL",
@@ -218,8 +307,8 @@ const baseDate = formatDate(addDays(maxDays));
           attendanceModality: item.typeDelivery,
           typeProcessItem: "10",
           sales: {
-            storeSale: logisticRef.outCenter,
-            warehouseSale: logisticRef.outDeposit, // 🔥 CORRETO
+            storeSale: chosen.log.outCenter,
+            warehouseSale: chosen.log.outDeposit,
             officeSale: salesOffice,
           },
           stock: {
@@ -233,7 +322,22 @@ const baseDate = formatDate(addDays(maxDays));
       explanation.push("✔️ Item atendido");
     }
 
-    if (errorItems.length > 0) {
+    // ===============================
+    // SLA FINAL
+    // ===============================
+    Object.values(deliveriesMap).forEach((delivery) => {
+      const flow = delivery.deliveryMethod;
+
+      const baseDate =
+        flow === "ED" || flow === "REA"
+          ? formatDate(addDays(1))
+          : formatDate(new Date());
+
+      delivery.dateAvailable = baseDate;
+      delivery.freight.modal[0].deliverySchedule[0].baseDate = baseDate;
+    });
+
+    if (errorItems.length) {
       return {
         explanation: explanation.join("\n"),
         data: {
